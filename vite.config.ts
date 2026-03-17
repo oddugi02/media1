@@ -9,7 +9,7 @@ export default defineConfig(({ mode }) => {
   return {
     // 💡 [체크 1] 깃허브 레포지토리 이름을 다시 한번 확인하세요!
     // 만약 주소가 https://github.com/ayoung/studio-pilot 이라면 '/studio-pilot/' 입니다.
-    base: '/studio-pilot/',
+    base: '/media1/',
 
     plugins: [react(), tailwindcss()],
 
