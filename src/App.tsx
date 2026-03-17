@@ -129,7 +129,7 @@ export default function App() {
   useEffect(() => {
     try {
       // 💡 [필살기] .env가 안 읽힐 수 있으니, 여기에 아영님의 키를 직접 넣으세요.
-      const myApiKey = "AIzaSyCB0DYBRZZNRcPFkf7l9WZvJrdGwftLwNA";
+      const myApiKey = (import.meta as any).env.VITE_GEMINI_API_KEY || "AIzaSyCB0DYBRZZNRcPFkf7l9WZvJrdGwftLwNA";
 
       // 💡 사용하는 라이브러리 버전에 따라 형식이 다를 수 있으니 가장 안전한 방식으로 초기화합니다.
       aiRef.current = new GoogleGenAI({ apiKey: myApiKey });
@@ -225,34 +225,56 @@ export default function App() {
 
     try {
       let professorContext = "";
-      // ... (교수님 컨텍스트 로직은 그대로 유지) ...
+      if (professorInsightId && professorInsightId !== 'manual') {
+        const prof = professorInsights.find(p => p.id === professorInsightId);
+        if (prof) professorContext = `교수님 스타일: ${prof.style}. 주의사항: ${prof.redFlags?.join(', ')}.`;
+      } else if (manualProfessorName) {
+        professorContext = `교수님 이름: ${manualProfessorName}`;
+      }
 
       const prompt = `과제 분석 전문가로서 다음을 분석하고 JSON으로만 답하세요. 
       { "title": "제목", "steps": ["단계1", "단계2"], "direction": "방향", "references": ["참고"], "cheerMessage": "응원" } 
       설명: ${text} ${professorContext}`;
 
-      const parts: any[] = [{ text: prompt }];
+      const parts: any[] = [prompt];
       if (imageBase64) {
         const base64Data = imageBase64.includes(',') ? imageBase64.split(',')[1] : imageBase64;
         parts.push({ inlineData: { mimeType: "image/jpeg", data: base64Data } });
       }
 
-      // 💡 [핵심 수정] 모델을 가져와서 바로 생성하는 최신 안정화 방식입니다.
-      const model = aiRef.current.getGenerativeModel({ model: "gemini-1.5-flash" });
-      const result = await model.generateContent(parts); // parts 배열을 직접 전달
+      const result = await aiRef.current.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: parts,
+        config: { responseMimeType: "application/json" }
+      });
 
-      const responseText = result.response.text();
-      // AI 답변에서 불필요한 마크다운 기호 제거
-      const cleanedJson = responseText.replace(/```json|```/g, "").trim();
-      const data = JSON.parse(cleanedJson);
-
+      const data = JSON.parse(result.text || '{}');
       console.log("✅ 분석 성공! 저장 중...");
 
-      // ... (저장 로직 및 알림 로직은 그대로 유지) ...
+      const newAssignment = {
+        title: data.title || '새로운 과제 분석',
+        description: text.substring(0, 50) + '...',
+        steps: (data.steps || []).map((step: string) => ({ id: Math.random().toString(36).substring(2, 9), text: step, completed: false })),
+        direction: data.direction || '',
+        references: data.references || [],
+        cheerMessage: data.cheerMessage || '',
+        deadline: deadline || '',
+        createdAt: Date.now(),
+        userId: currentUid
+      };
 
-    } catch (error) {
+      await addDoc(collection(db, 'assignments'), newAssignment);
+      const input = document.getElementById('assignment-input') as HTMLTextAreaElement; if (input) input.value = '';
+      addNotification(`과제 분석 완료: ${newAssignment.title}`);
+      setActiveTab('dashboard');
+
+    } catch (error: any) {
       console.error("❌ 분석 중 에러:", error);
-      alert("분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+      if (error?.message?.includes('API key') || error?.status === 400) {
+        alert("API 키가 유효하지 않거나 만료되었습니다. 올바른 키를 입력해주세요!");
+      } else {
+        alert("분석 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.");
+      }
     } finally {
       setIsAnalyzingAssignment(false);
     }
@@ -264,9 +286,12 @@ export default function App() {
     setIsAnalyzingTimetable(true);
     try {
       const prompt = `시간표 이미지 분석... [{"day": "요일", "subject": "과목명", "startTime": "HH:MM", "endTime": "HH:MM"}] 형식으로 반환.`;
+      const parts: any[] = [prompt];
+      if (imageBase64) parts.push({ inlineData: { mimeType: "image/jpeg", data: imageBase64.split(',')[1] } });
       const result = await aiRef.current.models.generateContent({
-        model: "gemini-3-flash-preview", contents: { parts: [{ text: prompt }, { inlineData: { mimeType: "image/jpeg", data: imageBase64.split(',')[1] } }] },
-        config: { responseMimeType: "application/json", thinkingConfig: { thinkingLevel: "LOW" as any } }
+        model: "gemini-2.5-flash",
+        contents: parts,
+        config: { responseMimeType: "application/json" }
       });
       const data = JSON.parse(result.text || '[]');
       if (profile) await setDoc(doc(db, 'users', currentUid), { ...profile, timetable: data });
@@ -281,11 +306,11 @@ export default function App() {
     try {
       const prompt = `교수님의 작업물/SNS 내용을 바탕으로 스타일을 분석. 정보: ${text}
         응답 형식 JSON: {"professorName": "...", "style": "...", "points": ["..."], "strategy": "...", "redFlags": ["..."], "preferredStyles": ["..."]}`;
-      const parts: any[] = [{ text: prompt }];
+      const parts: any[] = [prompt];
       if (imageBase64) parts.push({ inlineData: { mimeType: "image/jpeg", data: imageBase64.split(',')[1] } });
       const result = await aiRef.current.models.generateContent({
-        model: "gemini-3-flash-preview", contents: { parts },
-        config: { responseMimeType: "application/json", thinkingConfig: { thinkingLevel: "LOW" as any } }
+        model: "gemini-2.5-flash", contents: parts,
+        config: { responseMimeType: "application/json" }
       });
       const data = JSON.parse(result.text || '{}');
       const newInsight = {
@@ -297,7 +322,10 @@ export default function App() {
       const input = document.getElementById('prof-input') as HTMLTextAreaElement; if (input) input.value = '';
       setProfImage(null); setProfNameInput('');
       addNotification(`교수님 스타일 분석 완료: ${newInsight.professorName}`); speak("교수님 스타일 분석이 완료되었습니다.");
-    } catch (error) { console.error(error); } finally { setIsAnalyzingProfessor(false); }
+    } catch (error: any) { 
+        console.error(error); 
+        if (error?.message?.includes('API key') || error?.status === 400) alert("API 키가 유효하지 않거나 만료되었습니다. 올바른 키를 입력해주세요!");
+    } finally { setIsAnalyzingProfessor(false); }
   };
 
   const deleteProfessorInsight = async (id: string) => {
@@ -314,11 +342,11 @@ export default function App() {
       const insight = professorInsights.find(i => i.id === id); if (!insight) return;
       const prompt = `기존 데이터: 스타일 ${insight.style}, 새로운 정보: ${newText}
         응답 형식 JSON: {"professorName": "...", "style": "...", "points": ["..."], "strategy": "...", "redFlags": ["..."], "preferredStyles": ["..."]}`;
-      const parts: any[] = [{ text: prompt }];
+      const parts: any[] = [prompt];
       if (newImageBase64) parts.push({ inlineData: { mimeType: "image/jpeg", data: newImageBase64.split(',')[1] } });
       const result = await aiRef.current.models.generateContent({
-        model: "gemini-3-flash-preview", contents: { parts },
-        config: { responseMimeType: "application/json", thinkingConfig: { thinkingLevel: ThinkingLevel.LOW } }
+        model: "gemini-2.5-flash", contents: parts,
+        config: { responseMimeType: "application/json" }
       });
       const data = JSON.parse(result.text || '{}');
       const currentVersion = {
@@ -332,7 +360,10 @@ export default function App() {
         history: newHistory, updatedAt: Date.now()
       });
       addNotification(`${insight.professorName} 인사이트 업데이트 완료`, () => undoProfessorInsight(id));
-    } catch (error) { console.error(error); }
+    } catch (error: any) { 
+        console.error(error); 
+        if (error?.message?.includes('API key') || error?.status === 400) alert("API 키가 유효하지 않거나 만료되었습니다!");
+    }
   };
 
   const undoProfessorInsight = async (id: string) => {
@@ -459,8 +490,8 @@ export default function App() {
 
       <Sidebar />
 
-      <main className="flex-1 overflow-y-auto relative z-10">
-        <div className="fixed right-8 top-1/2 -translate-y-1/2 [writing-mode:vertical-rl] rotate-180 text-[10px] font-bold text-zinc-300 uppercase tracking-[0.5em] pointer-events-none z-0">{activeTab} / STUDIO PILOT</div>
+      <main className="flex-1 overflow-y-auto relative z-10 font-mono">
+        <div className="fixed right-8 top-1/2 -translate-y-1/2 [writing-mode:vertical-rl] rotate-180 text-[10px] font-bold text-stone-300 uppercase tracking-[0.5em] pointer-events-none z-0">{activeTab} / STUDIO PILOT</div>
         {((activeTab === 'analyze' && isAnalyzingAssignment) || (activeTab === 'professor' && isAnalyzingProfessor)) && (
           <div className="absolute inset-0 bg-white/40 backdrop-blur-md z-50 flex flex-col items-center justify-center gap-4">
             <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 1, ease: "linear" }} className="w-12 h-12 border-4 border-orange-500/20 border-t-orange-500 rounded-full" />
